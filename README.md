@@ -1,9 +1,8 @@
 # PROJECT MONTAGE
 
-**Student:** Hafsa Imtiaz · 22i-0959  
-**Section:** A  
+**Student:** Areen Zainab · 22i-1115
+**Section:** B 
 **Course:** Agentic AI CS-4015 · FAST NUCES  
-**Phase 1 Due:** 9th April 2026
 
 ---
 
