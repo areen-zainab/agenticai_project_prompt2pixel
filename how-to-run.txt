@@ -1,1 +1,9 @@
 venv\Scripts\activate
+
+#1st terminal :
+cd frontend
+npm run dev
+
+#2nd terminal:
+python main.py
+
