@@ -2,8 +2,8 @@
 phase3_cutting_room/agents/subtitle_burner.py
 ──────────────────────────────────────────────
 Burns subtitles (SRT) into the stitched video using FFmpeg's subtitles
-filter.  Generates the SRT file from the scene manifest + timing data
-if one does not already exist.
+filter.  Generates per-scene SRT files from actual audio duration, then
+combines them with proper timing offsets for the final video.
 
 The agent is OPTIONAL: if add_subtitles=False in the state, it passes
 the stitched video through unchanged.
@@ -17,12 +17,15 @@ from typing import Any
 
 from phase3_cutting_room.graph.state import Phase3State, log_event
 from shared.config.config import BASE_DIR, SCENE_MANIFEST_PATH
+from shared.config.config import BASE_DIR, SCENE_MANIFEST_PATH, PHASE2_AUDIO_DIR
 
 OUTPUT_DIR = BASE_DIR / "outputs_phase3"
 SRT_PATH   = OUTPUT_DIR / "subtitles.srt"
+SCENE_SRTS_DIR = OUTPUT_DIR / "scene_srts"
 
 
 # ─── SRT generation ─────────────────────────────────────────────────────────
+# ─── Timing utilities ───────────────────────────────────────────────────────
 
 def _ms_to_srt_ts(ms: float) -> str:
     """Convert milliseconds to SRT timestamp format HH:MM:SS,mmm."""
@@ -32,56 +35,166 @@ def _ms_to_srt_ts(ms: float) -> str:
     return f"{hours:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
 
+def _get_audio_duration(audio_path: Path, ff: str) -> float:
+    """Get duration of audio file in seconds using ffprobe."""
+    if not audio_path.is_file():
+        return 0.0
+    try:
+        result = subprocess.run(
+            [
+                ff.replace("ffmpeg", "ffprobe"),
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                str(audio_path),
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _get_video_duration(video_path: Path, ff: str) -> float:
+    """Get duration of video file in seconds using ffprobe."""
+    if not video_path.is_file():
+        return 0.0
+    try:
+        result = subprocess.run(
+            [
+                ff.replace("ffmpeg", "ffprobe"),
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                str(video_path),
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+# ─── Per-scene SRT generation ────────────────────────────────────────────────
+
+def _build_scene_srt(scene: dict, scene_id: int, duration_sec: float) -> list[tuple[float, float, str]]:
+    """
+    Create SRT entries for a single scene based on its actual audio duration.
+    Returns list of (start_ms, end_ms, text) tuples.
+    """
+    dialogues = scene.get("dialogue", [])
+    if not dialogues:
+        return []
+    
+    duration_ms = duration_sec * 1000
+    entries: list[tuple[float, float, str]] = []
+    
+    # Distribute dialogue lines evenly across scene duration
+    n = len(dialogues)
+    line_dur_ms = duration_ms / max(n, 1)
+    cursor_ms = 0.0
+    
+    for d in dialogues:
+        speaker = d.get("speaker", "")
+        line    = d.get("line", "")
+        text    = f"{speaker}: {line}" if speaker else line
+        end_ms  = cursor_ms + line_dur_ms
+        entries.append((cursor_ms, end_ms, text))
+        cursor_ms = end_ms
+    
+    return entries
+
+
+def _combine_scene_srts(
+    scenes: list[dict],
+    scene_srts: list[list[tuple[float, float, str]]],
+    video_durations: list[float],
+) -> list[tuple[float, float, str]]:
+    """
+    Combine per-scene SRT entries with timing offsets.
+    
+    Args:
+        scenes: list of scene dicts from manifest
+        scene_srts: list of SRT entry lists, one per scene
+        video_durations: list of video durations per scene (in seconds)
+    
+    Returns:
+        Combined SRT entries with cumulative timing
+    """
+    combined: list[tuple[float, float, str]] = []
+    cumulative_ms = 0.0
+    
+    for scene_idx, entries in enumerate(scene_srts):
+        # Offset all entries in this scene by cumulative duration
+        for start, end, text in entries:
+            combined.append((cumulative_ms + start, cumulative_ms + end, text))
+        
+        # Advance cursor by this scene's video duration
+        if scene_idx < len(video_durations):
+            cumulative_ms += video_durations[scene_idx] * 1000
+    
+    return combined
+
+
+def _write_srt_file(entries: list[tuple[float, float, str]], output_path: Path) -> bool:
+    """Write SRT entries to file."""
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            for idx, (start, end, text) in enumerate(entries, 1):
+                f.write(f"{idx}\n")
+                f.write(f"{_ms_to_srt_ts(start)} --> {_ms_to_srt_ts(end)}\n")
+                f.write(f"{text}\n\n")
+        return True
+    except Exception as e:
+        print(f"Error writing SRT: {e}")
+        return False
+
+
 def _build_srt(scene_manifest: dict, scene_video_paths: list[str], ff: str) -> Path:
     """
     Construct an SRT file from dialogue in the scene manifest.
     Estimates timing using per-scene video duration.
     """
     scenes = scene_manifest.get("scenes", [])
-    entries: list[tuple[float, float, str]] = []   # (start_ms, end_ms, text)
-    cursor_ms = 0.0
-
+    if not scenes:
+        return SRT_PATH
+    
+    SCENE_SRTS_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Step 1: Get per-scene audio durations and build scene SRTs
+    scene_srts: list[list[tuple[float, float, str]]] = []
+    video_durations: list[float] = []
+    
     for i, scene in enumerate(scenes):
-        # Estimate this scene's duration from its video if available
-        scene_dur_ms = 5000.0  # default 5 s per scene
-        if i < len(scene_video_paths):
-            vid = Path(scene_video_paths[i])
-            if vid.is_file():
-                try:
-                    result = subprocess.run(
-                        [
-                            ff.replace("ffmpeg", "ffprobe"),
-                            "-v", "error",
-                            "-show_entries", "format=duration",
-                            "-of", "csv=p=0",
-                            str(vid),
-                        ],
-                        capture_output=True, text=True, timeout=10,
-                    )
-                    scene_dur_ms = float(result.stdout.strip()) * 1000
-                except Exception:
-                    pass
-
-        dialogues = scene.get("dialogue", [])
-        n = len(dialogues)
-        line_dur = scene_dur_ms / max(n, 1)
-
-        for d in dialogues:
-            speaker = d.get("speaker", "")
-            line    = d.get("line", "")
-            text    = f"{speaker}: {line}" if speaker else line
-            end_ms  = cursor_ms + line_dur
-            entries.append((cursor_ms, end_ms, text))
-            cursor_ms = end_ms
-
-    # Write SRT
+        scene_id = int(scene.get("scene_id", i + 1))
+        
+        # Try to get duration from Phase 2 audio file
+        audio_path = PHASE2_AUDIO_DIR / f"scene_{scene_id:02d}.wav"
+        audio_dur_sec = _get_audio_duration(audio_path, ff)
+        
+        # Fallback to video duration if audio not found
+        if audio_dur_sec <= 0 and i < len(scene_video_paths):
+            vid_path = Path(scene_video_paths[i])
+            audio_dur_sec = _get_video_duration(vid_path, ff)
+        
+        # Final fallback to default
+        if audio_dur_sec <= 0:
+            audio_dur_sec = 5.0
+        
+        video_durations.append(audio_dur_sec)
+        
+        # Build SRT entries for this scene
+        scene_srt = _build_scene_srt(scene, scene_id, audio_dur_sec)
+        scene_srts.append(scene_srt)
+    
+    # Step 2: Combine all scene SRTs with proper timing
+    combined_entries = _combine_scene_srts(scenes, scene_srts, video_durations)
+    
+    # Step 3: Write final combined SRT
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(SRT_PATH, "w", encoding="utf-8") as f:
-        for idx, (start, end, text) in enumerate(entries, 1):
-            f.write(f"{idx}\n")
-            f.write(f"{_ms_to_srt_ts(start)} --> {_ms_to_srt_ts(end)}\n")
-            f.write(f"{text}\n\n")
-
+    _write_srt_file(combined_entries, SRT_PATH)
+    
     return SRT_PATH
 
 
