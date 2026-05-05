@@ -7,3 +7,7 @@ npm run dev
 #2nd terminal:
 python main.py
 
+Prompts:
+A soldier befriends an enemy during a temporary ceasefire.
+
+

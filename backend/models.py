@@ -67,6 +67,20 @@ class Phase2Output(BaseModel):
     video_generation_mode: str = "pexels_stock"
 
 
+# ── Phase 3 Models ──────────────────────────────────────────────────────────
+
+class Phase3Output(BaseModel):
+    """Combined output from Phase 3 (Cutting Room)."""
+    final_output_path: Optional[str] = None
+    duration_seconds: float = 0.0
+    scene_count: int = 0
+    transition_style: str = "fade"
+    subtitles_burned: bool = False
+    srt_path: Optional[str] = None
+    error: Optional[str] = None
+    status: str = "pending"
+
+
 # ── Pipeline Status Models ──────────────────────────────────────────────────
 
 class PipelineStatus(BaseModel):
@@ -75,12 +89,17 @@ class PipelineStatus(BaseModel):
     phase1_error: Optional[str] = None
     phase1_start_time: Optional[str] = None
     phase1_end_time: Optional[str] = None
-    
+
     phase2_completed: bool = False
     phase2_error: Optional[str] = None
     phase2_start_time: Optional[str] = None
     phase2_end_time: Optional[str] = None
-    
+
+    phase3_completed: bool = False
+    phase3_error: Optional[str] = None
+    phase3_start_time: Optional[str] = None
+    phase3_end_time: Optional[str] = None
+
     pipeline_running: bool = False
     current_phase: Optional[str] = None
 
@@ -97,6 +116,14 @@ class Phase2Request(BaseModel):
     """Request body for triggering Phase 2."""
     scene_id: Optional[int] = None
     """If specified, process only this scene. If None, process all scenes."""
+
+
+class Phase3Request(BaseModel):
+    """Request body for triggering Phase 3."""
+    transition_style: str = "fade"
+    """Transition between scenes: fade | cut | wipe_left | wipe_right | dissolve | fade_black"""
+    add_subtitles: bool = True
+    """Whether to burn SRT subtitles into the final video."""
 
 
 # ── API Response Models ──────────────────────────────────────────────────────

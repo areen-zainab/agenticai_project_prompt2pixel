@@ -367,7 +367,17 @@ const Phase2 = () => {
               <div className="p2-cta-hint">← Writers' Room</div>
               <div style={{ display: 'flex', gap: '12px' }}>
                 <button className="p2-btn-back" onClick={() => navigate('/')}>← Back to Phase 1</button>
-                {phase2Done && (
+                {phase2Done && !loading && (
+                  <button className="p2-btn-regen" onClick={() => navigate('/phase3')}>
+                    Proceed to Phase 3 →
+                  </button>
+                )}
+                {phase2Done && loading && (
+                  <button className="p2-btn-regen" disabled>
+                    Running…
+                  </button>
+                )}
+                {!phase2Done && (
                   <button className="p2-btn-regen" onClick={handleRun} disabled={loading}>
                     {loading ? 'Running…' : 'Regenerate'}
                   </button>

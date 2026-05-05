@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
     print("\n✓ Backend server starting...")
     print("✓ Phase 1 (Writer's Room) available")
     print("✓ Phase 2 (Studio Floor) available")
+    print("✓ Phase 3 (Cutting Room) available")
     print("✓ API docs: http://localhost:8000/docs\n")
     
     yield
@@ -330,6 +331,91 @@ def get_phase2_outputs():
         "success": True,
         "data": {"scenes": scenes, "video_generation_mode": "pexels_stock"},
         "message": "Phase 2 outputs retrieved from disk"
+    }
+
+
+# ── Phase 3: Cutting Room Endpoints ─────────────────────────────────────────
+
+class Phase3Request(BaseModel):
+    transition_style: str = "fade"  # "fade", "cut", "wipe_left", "wipe_right", "dissolve", "fade_black"
+    add_subtitles: bool = True
+
+
+@app.post("/api/phase3/run", tags=["Phase 3"])
+def run_phase3(request: Phase3Request):
+    """
+    Trigger Phase 3 execution (Cutting Room).
+    
+    Stitches all Phase 2 scene videos into a single final_output.mp4
+    with transitions and optional subtitles.
+    """
+    try:
+        from phase3_cutting_room.graph.workflow import build_phase3_graph
+        from phase3_cutting_room.graph.state import initial_phase3_state
+        
+        # Load the Phase 1 scene manifest for subtitle generation
+        scene_manifest = {}
+        manifest_path = Path("outputs/scene_manifest.json")
+        if manifest_path.exists():
+            import json
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                scene_manifest = json.load(f)
+        
+        # Build initial state for Phase 3
+        state = initial_phase3_state(
+            scene_manifest=scene_manifest,
+            transition_style=request.transition_style,
+            add_subtitles=request.add_subtitles,
+        )
+        
+        # Execute the Phase 3 graph
+        graph = build_phase3_graph()
+        result = graph.invoke(state)
+        
+        return {
+            "success": True,
+            "data": {
+                "final_output_path": result.get("final_output_path"),
+                "duration_seconds": result.get("duration_seconds"),
+                "scene_count": result.get("scene_count"),
+                "phase3_manifest": result.get("phase3_manifest"),
+                "events": result.get("events", []),
+            },
+            "message": "Phase 3 completed successfully"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/phase3/video", tags=["Phase 3"])
+def get_final_video():
+    """
+    Stream the final composited MP4 from Phase 3.
+    """
+    final_path = Path("outputs_phase3/final_output.mp4")
+    if not final_path.exists():
+        raise HTTPException(status_code=404, detail="Final video not found. Run Phase 3 first.")
+    
+    return FileResponse(final_path, media_type="video/mp4", filename="final_output.mp4")
+
+
+@app.get("/api/phase3/outputs", tags=["Phase 3"])
+def get_phase3_outputs():
+    """
+    Retrieve metadata about the Phase 3 final video.
+    """
+    manifest_path = Path("outputs_phase3/phase3_manifest.json")
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail="Phase 3 has not been run yet")
+    
+    import json
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    
+    return {
+        "success": True,
+        "data": manifest,
+        "message": "Phase 3 outputs retrieved successfully"
     }
 
 
