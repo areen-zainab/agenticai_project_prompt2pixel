@@ -8,7 +8,7 @@ providing REST APIs for the frontend.
 from backend.orchestrator import get_orchestrator, PipelineOrchestrator
 from backend.models import (
     Phase1Output, Phase2Output, PipelineStatus,
-    Phase1Request, Phase2Request
+    Phase1Request, Phase2Request, Phase3Request, EditRequest
 )
 
 __all__ = [
@@ -19,4 +19,6 @@ __all__ = [
     "PipelineStatus",
     "Phase1Request",
     "Phase2Request",
+    "Phase3Request",
+    "EditRequest",
 ]

@@ -14,6 +14,7 @@ Usage:
     API docs available at http://localhost:8000/docs
 """
 
+import json
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -27,10 +28,12 @@ from fastapi.responses import FileResponse, JSONResponse
 # Ensure imports work
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from backend import get_orchestrator, Phase1Request, Phase2Request
-from backend.models import ErrorResponse
+from backend import get_orchestrator, Phase1Request, Phase2Request, EditRequest
+from backend.models import ErrorResponse, Phase1Output, Phase2Output, Phase3Output, PipelineStatus
 from pydantic import BaseModel
 from shared.config.config import IMAGE_ASSETS_DIR, USE_VIDEO_MODEL
+from phase5_edit_agent.agents.edit_executor import state_manager as edit_state_manager
+from phase5_edit_agent.graph.workflow import build_edit_graph
 
 
 # ── Lifespan Events ────────────────────────────────────────────────────────
@@ -72,6 +75,70 @@ app.add_middleware(
 
 # Get global orchestrator
 orchestrator = get_orchestrator()
+edit_graph = build_edit_graph()
+
+
+def _load_json_file(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _collect_snapshot_assets() -> list[str]:
+    base = Path(__file__).resolve().parent
+    patterns = [
+        base / "outputs" / "image_assets" / "*.png",
+        base / "outputs" / "*.json",
+        base / "outputs_phase2" / "raw_scenes" / "**" / "*.mp4",
+        base / "outputs_phase2" / "stock" / "**" / "*.mp4",
+        base / "outputs_phase2" / "audio" / "*.wav",
+        base / "outputs_phase2" / "frames" / "**" / "*",
+        base / "outputs_phase3" / "*.mp4",
+        base / "outputs_phase3" / "*.srt",
+        base / "outputs_phase3" / "*.json",
+    ]
+    assets: list[str] = []
+    import glob
+
+    for pattern in patterns:
+        for item in glob.glob(str(pattern), recursive=True):
+            if os.path.isfile(item):
+                assets.append(os.path.abspath(item))
+    return sorted(set(assets))
+
+
+def _build_snapshot_state(extra: dict | None = None) -> dict:
+    phase1_output = orchestrator.get_phase1_output()
+    phase2_output = orchestrator.get_phase2_output()
+    phase3_manifest = _load_json_file(Path("outputs_phase3/phase3_manifest.json"))
+
+    snapshot = {
+        "phase1_output": phase1_output.model_dump() if phase1_output else None,
+        "phase2_output": phase2_output.model_dump() if phase2_output else None,
+        "phase3_output": phase3_manifest or None,
+        "pipeline_status": orchestrator.get_status().model_dump(),
+    }
+    if extra:
+        snapshot.update(extra)
+    return snapshot
+
+
+def _snapshot_pipeline(description: str, extra: dict | None = None) -> None:
+    edit_state_manager.snapshot(
+        state_json=_build_snapshot_state(extra),
+        description=description,
+        asset_paths=_collect_snapshot_assets(),
+    )
+
+
+def _apply_snapshot_to_orchestrator(snapshot: dict) -> None:
+    if snapshot.get("phase1_output"):
+        orchestrator.phase1_output = Phase1Output.model_validate(snapshot["phase1_output"])
+    if snapshot.get("phase2_output"):
+        orchestrator.phase2_output = Phase2Output.model_validate(snapshot["phase2_output"])
+    if snapshot.get("pipeline_status"):
+        orchestrator.status = PipelineStatus.model_validate(snapshot["pipeline_status"])
 
 
 # ── Health Check ────────────────────────────────────────────────────────────
@@ -96,6 +163,8 @@ def run_phase1(request: Phase1Request):
             prompt=request.prompt,
             script_path=request.script_path
         )
+        if output and not output.error:
+            _snapshot_pipeline(f"Phase 1 completed: {request.prompt[:80]}")
         return {
             "success": True,
             "data": output.model_dump(),
@@ -214,6 +283,10 @@ def run_phase2(request: Phase2Request):
     """
     try:
         output = orchestrator.run_phase2(scene_id=request.scene_id)
+        if output:
+            _snapshot_pipeline(
+                f"Phase 2 completed{f' for scene {request.scene_id}' if request.scene_id else ''}"
+            )
         return {
             "success": True,
             "data": output.model_dump(),
@@ -371,6 +444,10 @@ def run_phase3(request: Phase3Request):
         # Execute the Phase 3 graph
         graph = build_phase3_graph()
         result = graph.invoke(state)
+        if result and not result.get("error"):
+            _snapshot_pipeline(
+                f"Phase 3 completed ({request.transition_style}, subtitles={request.add_subtitles})"
+            )
         
         return {
             "success": True,
@@ -417,6 +494,60 @@ def get_phase3_outputs():
         "data": manifest,
         "message": "Phase 3 outputs retrieved successfully"
     }
+
+
+# ── Phase 5: Edit Agent Endpoints ───────────────────────────────────────────
+
+@app.post("/api/edit/run", tags=["Phase 5"])
+def run_edit(request: EditRequest):
+    """Classify and execute a natural-language edit request."""
+    try:
+        current_state = _build_snapshot_state({"query": request.query})
+        result = edit_graph.invoke(
+            {
+                "query": request.query,
+                "current_state": current_state,
+                "status": "pending",
+            }
+        )
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get("response", "Edit executed successfully"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/edit/history", tags=["Phase 5"])
+def get_edit_history():
+    """Return saved version history for the undo UI."""
+    return {
+        "success": True,
+        "data": edit_state_manager.history(),
+        "message": "Edit history retrieved successfully",
+    }
+
+
+@app.post("/api/edit/undo/{version}", tags=["Phase 5"])
+def undo_edit_version(version: int):
+    """Restore assets and pipeline state from a previous snapshot."""
+    try:
+        record = edit_state_manager.revert(version)
+        _apply_snapshot_to_orchestrator(record.state_json)
+        return {
+            "success": True,
+            "data": {
+                "version": record.version,
+                "timestamp": record.timestamp,
+                "description": record.description,
+            },
+            "message": f"Reverted to version {version}",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Pipeline Endpoints ──────────────────────────────────────────────────────

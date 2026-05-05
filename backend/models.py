@@ -126,6 +126,11 @@ class Phase3Request(BaseModel):
     """Whether to burn SRT subtitles into the final video."""
 
 
+class EditRequest(BaseModel):
+    """Request body for triggering the Phase 5 edit workflow."""
+    query: str
+
+
 # ── API Response Models ──────────────────────────────────────────────────────
 
 class ErrorResponse(BaseModel):

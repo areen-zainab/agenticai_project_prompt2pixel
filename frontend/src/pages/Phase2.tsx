@@ -289,7 +289,10 @@ const Phase2 = () => {
             <div className="p2-hero">
               <div className="p2-hero-eyebrow">Phase 2 · Studio Floor</div>
               <h1 className="p2-hero-title">Video Production &amp;<br />Post-Processing</h1>
-              <p className="p2-hero-sub">AI-generated video, synthesized dialogue, face replacement, and lip synchronisation.</p>
+              <p className="p2-hero-sub">
+                AI-generated video, synthesized dialogue, face replacement, and lip synchronisation.
+                {refChars.length > 0 && ` ${refChars.length} character profile(s) loaded from Phase 1.`}
+              </p>
             </div>
 
             {error && (

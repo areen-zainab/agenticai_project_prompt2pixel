@@ -1,4 +1,5 @@
 venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
 
 #1st terminal :
 cd frontend
@@ -9,5 +10,5 @@ python main.py
 
 Prompts:
 A soldier befriends an enemy during a temporary ceasefire.
-
+A young astronaut discovers a hidden ocean beneath the surface of Mars and encounters an unknown lifeform.
 
