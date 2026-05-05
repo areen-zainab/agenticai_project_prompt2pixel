@@ -1,0 +1,15 @@
+venv/*
+__pycache__/
+*.pyc
+*.bin
+.pytest_cache/
+*\node_modules\
+
+shared/memory/
+
+.env
+*/.env 
+shared/config/config.py
+
+outputs/
+outputs_phase2/
