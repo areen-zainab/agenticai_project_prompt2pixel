@@ -77,14 +77,18 @@ def _heuristic_fallback(edit_query: str) -> EditIntent:
 
     if _has_any(query, ["subtitle", "subtitles", "transition", "fade", "wipe", "dissolve", "composite", "final video", "render", "recompose", "speed up this scene", "slow down this scene"]):
         params: dict[str, Any] = {"query": edit_query}
+        intent_name = "update_video_composition"
         if "remove" in query and ("subtitle" in query or "subtitles" in query):
             params["add_subtitles"] = False
+            intent_name = "remove_subtitle"
         if "add" in query and ("subtitle" in query or "subtitles" in query):
             params["add_subtitles"] = True
         if "speed up" in query:
             params["speed"] = 1.25
+            intent_name = "speed_up_scene"
         if "slow down" in query:
             params["speed"] = 0.8
+            intent_name = "slow_down_scene"
         if "wipe left" in query:
             params["transition_style"] = "wipe_left"
         elif "wipe right" in query:
@@ -98,7 +102,7 @@ def _heuristic_fallback(edit_query: str) -> EditIntent:
         elif "fade" in query:
             params["transition_style"] = "fade"
         return EditIntent(
-            intent="update_video_composition",
+            intent=intent_name,
             target="video",
             scope=scope,
             parameters=params,
@@ -107,16 +111,21 @@ def _heuristic_fallback(edit_query: str) -> EditIntent:
 
     if _has_any(query, ["voice", "background music", "music", "silence", "audio speed", "sound", "narrator sound", "tone", "sad", "happy"]):
         params = {"query": edit_query}
+        intent_name = "update_audio"
         if "sad" in query:
             params["tone"] = "sad"
+            intent_name = "change_voice_tone"
         elif "happy" in query:
             params["tone"] = "happy"
+            intent_name = "change_voice_tone"
         elif "whisper" in query:
             params["tone"] = "whispered"
+            intent_name = "change_voice_tone"
         if "background music" in query:
             params["music_action"] = "add" if "add" in query else "change"
+            intent_name = "add_background_music"
         return EditIntent(
-            intent="update_audio",
+            intent=intent_name,
             target="audio",
             scope=scope,
             parameters=params,
@@ -125,12 +134,18 @@ def _heuristic_fallback(edit_query: str) -> EditIntent:
 
     if _has_any(query, ["darken", "darker", "lighten", "color", "colour", "character design", "design", "scene style", "visual look", "visual", "appearance", "frame"]):
         params = {"query": edit_query}
+        intent_name = "update_visual_frame"
         if "darker" in query:
             params["look"] = "darker"
+            intent_name = "make_scene_darker"
         elif "brighter" in query:
             params["look"] = "brighter"
+            intent_name = "make_scene_brighter"
+        if "character design" in query:
+            params["design_update"] = True
+            intent_name = "change_character_design"
         return EditIntent(
-            intent="update_visual_frame",
+            intent=intent_name,
             target="video_frame",
             scope=scope,
             parameters=params,

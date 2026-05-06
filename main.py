@@ -560,6 +560,27 @@ def accept_edit_version(version: int):
     try:
         record = edit_state_manager.get_version(version)
         _apply_snapshot_to_orchestrator(record.state_json)
+
+        # Recompose final output so accepted changes are reflected in playable final video.
+        from phase3_cutting_room.graph.state import initial_phase3_state
+        from phase3_cutting_room.graph.workflow import build_phase3_graph
+
+        scene_manifest = _load_json_file(Path("outputs/scene_manifest.json"))
+        classified_intent = record.state_json.get("classified_intent", {}) if isinstance(record.state_json, dict) else {}
+        params = classified_intent.get("parameters", {}) if isinstance(classified_intent, dict) else {}
+        transition_style = str(params.get("transition_style", "fade"))
+        add_subtitles = bool(params.get("add_subtitles", True))
+
+        phase3_state = initial_phase3_state(
+            scene_manifest=scene_manifest,
+            transition_style=transition_style,
+            add_subtitles=add_subtitles,
+        )
+        phase3_graph = build_phase3_graph()
+        phase3_result = phase3_graph.invoke(phase3_state)
+        if phase3_result.get("error"):
+            raise RuntimeError(f"Phase 3 recomposition failed: {phase3_result.get('error')}")
+
         committed_version = edit_state_manager.snapshot(
             state_json=record.state_json,
             description=f"Accepted edit from version {version}",
@@ -570,6 +591,7 @@ def accept_edit_version(version: int):
             "data": {
                 "accepted_version": version,
                 "committed_version": committed_version,
+                "final_output_url": "/api/phase3/video",
             },
             "message": f"Accepted edit version {version}",
         }

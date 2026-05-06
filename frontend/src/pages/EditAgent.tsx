@@ -58,6 +58,7 @@ const EditAgent = () => {
   const [originalVideoUrl, setOriginalVideoUrl] = useState<string | null>(null);
   const [editedVideoUrl, setEditedVideoUrl] = useState<string | null>(null);
   const [acceptedVideoUrl, setAcceptedVideoUrl] = useState<string | null>(null);
+  const [acceptedCommitVersion, setAcceptedCommitVersion] = useState<number | null>(null);
 
   const loadHistory = async () => {
     try {
@@ -156,6 +157,7 @@ const EditAgent = () => {
       setBeforeVersion(runResult.before_version ?? null);
       setAfterVersion(runResult.after_version ?? null);
       setReviewMode(true);
+      setAcceptedCommitVersion(null);
       setNotice(data.message || runResult.response || 'Review the preview and accept or reject the changes.');
       await loadHistory();
     } catch (err: any) {
@@ -178,7 +180,11 @@ const EditAgent = () => {
         throw new Error(data.detail || 'Accept failed');
       }
       setReviewMode(false);
-      setAcceptedVideoUrl(editedVideoUrl || previewUrl);
+      const finalUrl = data?.data?.final_output_url
+        ? `${API.replace('/api', '')}${data.data.final_output_url}?t=${Date.now()}`
+        : `${API}/phase3/video?t=${Date.now()}`;
+      setAcceptedVideoUrl(finalUrl);
+      setAcceptedCommitVersion(data?.data?.committed_version ?? null);
       setNotice(data.message || `Changes accepted at version ${afterVersion}.`);
       await loadHistory();
     } catch (err: any) {
@@ -564,6 +570,7 @@ const EditAgent = () => {
                     {acceptedVideoUrl ? (
                       <video
                         controls
+                        autoPlay
                         preload="metadata"
                         src={acceptedVideoUrl}
                         style={{ width: '100%', borderRadius: '8px', border: '1px solid #1e1e22' }}
@@ -573,9 +580,35 @@ const EditAgent = () => {
                         Accept an edited segment to update final output preview.
                       </div>
                     )}
-                    <a className="e-revert-btn" href={`${API}/phase3/video`} target="_blank" rel="noreferrer">
-                      Open Full Final Video
-                    </a>
+                    {beforeVersion !== null && acceptedVideoUrl && (
+                      <button
+                        className="e-revert-btn"
+                        onClick={async () => {
+                          setUndoingVersion(beforeVersion);
+                          try {
+                            const res = await fetch(`${API}/edit/reject/${beforeVersion}`, { method: 'POST' });
+                            const data = await res.json();
+                            if (!res.ok) {
+                              throw new Error(data.detail || 'Undo accepted changes failed');
+                            }
+                            setAcceptedVideoUrl(null);
+                            setAcceptedCommitVersion(null);
+                            setNotice(data.message || 'Accepted changes were undone.');
+                            await loadHistory();
+                          } catch (err: any) {
+                            setError(err.message || 'Undo accepted changes failed.');
+                          } finally {
+                            setUndoingVersion(null);
+                          }
+                        }}
+                        disabled={undoingVersion === beforeVersion}
+                      >
+                        {undoingVersion === beforeVersion ? 'Undoing...' : 'Undo Accepted Changes'}
+                      </button>
+                    )}
+                    {acceptedCommitVersion !== null && (
+                      <div className="e-panel-sub">Committed version: {acceptedCommitVersion}</div>
+                    )}
                   </div>
                 </div>
               </aside>

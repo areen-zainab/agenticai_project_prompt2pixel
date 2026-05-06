@@ -183,6 +183,8 @@ class PipelineOrchestrator:
         try:
             if scene_id is None:
                 self._reset_phase2_outputs()
+            else:
+                self._reset_phase2_scene_outputs(scene_id)
 
             # Load Phase 1 outputs (script and characters)
             manifest_path = BASE_DIR / SCENE_MANIFEST_PATH
@@ -272,6 +274,34 @@ class PipelineOrchestrator:
             if directory.exists():
                 shutil.rmtree(directory, ignore_errors=True)
             directory.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _reset_phase2_scene_outputs(scene_id: int) -> None:
+        """Clear generated artifacts for one scene before scene-only regeneration."""
+        sid2 = f"{scene_id:02d}"
+        sid = str(scene_id)
+
+        scene_targets = [
+            PHASE2_AUDIO_DIR / f"scene_{sid2}.wav",
+            PHASE2_AUDIO_DIR / f"scene_{sid}.wav",
+            PHASE2_RAW_SCENES_DIR / f"scene_{sid2}.mp4",
+            PHASE2_RAW_SCENES_DIR / f"scene_{sid}.mp4",
+            PHASE2_FRAMES_ROOT / f"scene_{sid2}",
+            PHASE2_FRAMES_ROOT / f"scene_{sid}",
+            PHASE2_FACE_SWAPPED_DIR / f"scene_{sid2}",
+            PHASE2_FACE_SWAPPED_DIR / f"scene_{sid}",
+            PHASE2_STOCK_DIR / f"scene_{sid2}",
+            PHASE2_STOCK_DIR / f"scene_{sid}",
+        ]
+
+        for target in scene_targets:
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            elif target.is_file():
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
     
     def run_full_pipeline(self, prompt: str) -> tuple[Phase1Output, Optional[Phase2Output]]:
         """

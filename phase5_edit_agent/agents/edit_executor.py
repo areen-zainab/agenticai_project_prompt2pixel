@@ -6,6 +6,7 @@ import glob
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,141 @@ def _phase2_scene_path(scene_id: int) -> Path | None:
     return None
 
 
+def _manifest_path() -> Path:
+    return BASE_DIR / "outputs" / "scene_manifest.json"
+
+
+def _load_manifest() -> dict[str, Any]:
+    path = _manifest_path()
+    if not path.is_file():
+        return {}
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _save_manifest(data: dict[str, Any]) -> None:
+    path = _manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+
+
+def _scene_duration(path: Path) -> float:
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        return float((probe.stdout or "0").strip() or "0")
+    except Exception:
+        return 0.0
+
+
+def _update_manifest_for_voice_tone(scene_id: int | None, tone: str) -> None:
+    manifest = _load_manifest()
+    scenes = manifest.get("scenes", [])
+    for scene in scenes:
+        if scene_id is not None and int(scene.get("scene_id", -1)) != scene_id:
+            continue
+        for line in scene.get("dialogue", []) or []:
+            line["emotion"] = tone
+    if scenes:
+        _save_manifest(manifest)
+
+
+def _update_manifest_for_visual_edit(scene_id: int | None, look: str | None, design_update: bool) -> None:
+    manifest = _load_manifest()
+    scenes = manifest.get("scenes", [])
+    look_suffix = ""
+    if look == "darker":
+        look_suffix = " darker cinematic lighting"
+    elif look == "brighter":
+        look_suffix = " brighter cinematic lighting"
+    design_suffix = " redesigned character appearance and outfit details" if design_update else ""
+    for scene in scenes:
+        if scene_id is not None and int(scene.get("scene_id", -1)) != scene_id:
+            continue
+        for line in scene.get("dialogue", []) or []:
+            cue = str(line.get("visual_cue", "")).strip()
+            merged = f"{cue}{look_suffix}{design_suffix}".strip()
+            if merged:
+                line["visual_cue"] = merged
+    if scenes:
+        _save_manifest(manifest)
+
+
+def _overlay_background_music(scene_id: int) -> bool:
+    scene_path = _phase2_scene_path(scene_id)
+    if scene_path is None:
+        return False
+    duration = _scene_duration(scene_path)
+    if duration <= 0:
+        duration = 8.0
+    temp_output = scene_path.with_name(f"{scene_path.stem}_bgm_tmp.mp4")
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(scene_path),
+        "-f",
+        "lavfi",
+        "-i",
+        f"sine=frequency=220:sample_rate=44100:duration={duration}",
+        "-filter_complex",
+        "[1:a]volume=0.08[music];[0:a][music]amix=inputs=2:duration=first[a]",
+        "-map",
+        "0:v",
+        "-map",
+        "[a]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-shortest",
+        str(temp_output),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=180, check=False)
+    if result.returncode != 0 or not temp_output.is_file():
+        return False
+    shutil.move(str(temp_output), str(scene_path))
+    return True
+
+
+def _speed_adjust_scene(scene_id: int, speed: float) -> bool:
+    scene_path = _phase2_scene_path(scene_id)
+    if scene_path is None:
+        return False
+    speed = max(0.5, min(float(speed), 2.0))
+    temp_output = scene_path.with_name(f"{scene_path.stem}_speed_tmp.mp4")
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(scene_path),
+        "-filter_complex",
+        f"[0:v]setpts=PTS/{speed}[v];[0:a]atempo={speed}[a]",
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-c:a",
+        "aac",
+        str(temp_output),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=180, check=False)
+    if result.returncode != 0 or not temp_output.is_file():
+        return False
+    shutil.move(str(temp_output), str(scene_path))
+    return True
+
+
 def _save_edit_clip(scene_id: int | None, source_path: Path | None, edit_version: int) -> str | None:
     if scene_id is None or source_path is None or not source_path.is_file():
         return None
@@ -122,7 +258,23 @@ def _rerun_phase2(intent: EditIntent, current_state: dict[str, Any], scene_id: i
     if selected_scene_id is None:
         # granular default: keep edits scoped where possible
         selected_scene_id = current_state.get("selected_scene_id")
+    tone = intent.parameters.get("tone")
+    music_action = intent.parameters.get("music_action")
+    if tone and selected_scene_id is not None:
+        _update_manifest_for_voice_tone(int(selected_scene_id), str(tone))
+    if intent.target == "video_frame":
+        _update_manifest_for_visual_edit(
+            int(selected_scene_id) if selected_scene_id is not None else None,
+            str(intent.parameters.get("look")) if intent.parameters.get("look") else None,
+            bool(intent.parameters.get("design_update")),
+        )
     output = orchestrator.run_phase2(scene_id=selected_scene_id)
+    music_overlayed = False
+    if (
+        intent.intent == "add_background_music"
+        or str(music_action).lower() in {"add", "change"}
+    ) and selected_scene_id is not None:
+        music_overlayed = _overlay_background_music(int(selected_scene_id))
     return {
         "phase2_output": output.model_dump(),
         "edited_scope": {
@@ -130,6 +282,7 @@ def _rerun_phase2(intent: EditIntent, current_state: dict[str, Any], scene_id: i
             "character": _parse_scope_character(intent.scope),
             "target": intent.target,
         },
+        "music_overlayed": music_overlayed,
     }
 
 
@@ -175,12 +328,22 @@ def execute_edit(intent: EditIntent, current_state: dict[str, Any], state_mgr: S
     elif intent.target in {"audio", "video_frame"}:
         updated = _rerun_phase2(intent, current_state, scene_id)
     elif intent.target == "video":
-        updated = _rerun_phase3(intent, current_state)
+        selected_scene_id = scene_id if scene_id is not None else _parse_scope_scene(intent.scope)
+        if intent.parameters.get("speed") and selected_scene_id is not None:
+            speed_applied = _speed_adjust_scene(int(selected_scene_id), float(intent.parameters.get("speed", 1.25)))
+            updated = {
+                "speed_adjusted": speed_applied,
+                "phase2_output": get_orchestrator().get_phase2_output().model_dump() if get_orchestrator().get_phase2_output() else None,
+            }
+        else:
+            updated = _rerun_phase3(intent, current_state)
     else:
         raise ValueError(f"Unknown target: {intent.target}")
 
     selected_scene_id = scene_id if scene_id is not None else _parse_scope_scene(intent.scope)
     preview_video_url = "/api/phase3/video" if intent.target == "video" else None
+    if intent.target == "video" and intent.parameters.get("speed") and selected_scene_id is not None:
+        preview_video_url = f"/api/phase2/video/{selected_scene_id}"
     if intent.target != "video" and selected_scene_id is not None:
         preview_video_url = f"/api/phase2/video/{selected_scene_id}"
 
