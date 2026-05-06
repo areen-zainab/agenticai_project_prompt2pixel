@@ -6,7 +6,7 @@ __pycache__/
 *\node_modules\
 
 shared/memory/
-
+SadTalker/
 .env
 */.env 
 shared/config/config.py
