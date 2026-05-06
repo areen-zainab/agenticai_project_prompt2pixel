@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,11 @@ from shared.config.config import (
     CHARACTER_DB_PATH,
     SCENE_MANIFEST_PATH,
     USE_VIDEO_MODEL,
+    PHASE2_AUDIO_DIR,
+    PHASE2_FRAMES_ROOT,
+    PHASE2_RAW_SCENES_DIR,
+    PHASE2_FACE_SWAPPED_DIR,
+    PHASE2_STOCK_DIR,
 )
 
 from backend.models import (
@@ -175,6 +181,9 @@ class PipelineOrchestrator:
         self.status.phase2_start_time = datetime.now().isoformat()
         
         try:
+            if scene_id is None:
+                self._reset_phase2_outputs()
+
             # Load Phase 1 outputs (script and characters)
             manifest_path = BASE_DIR / SCENE_MANIFEST_PATH
             char_path = BASE_DIR / CHARACTER_DB_PATH
@@ -248,6 +257,21 @@ class PipelineOrchestrator:
         finally:
             self.status.pipeline_running = False
             self.status.current_phase = None
+
+    @staticmethod
+    def _reset_phase2_outputs() -> None:
+        """Clear generated Phase 2 artifacts before a full regeneration."""
+        output_dirs = [
+            PHASE2_AUDIO_DIR,
+            PHASE2_FRAMES_ROOT,
+            PHASE2_RAW_SCENES_DIR,
+            PHASE2_FACE_SWAPPED_DIR,
+            PHASE2_STOCK_DIR,
+        ]
+        for directory in output_dirs:
+            if directory.exists():
+                shutil.rmtree(directory, ignore_errors=True)
+            directory.mkdir(parents=True, exist_ok=True)
     
     def run_full_pipeline(self, prompt: str) -> tuple[Phase1Output, Optional[Phase2Output]]:
         """

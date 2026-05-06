@@ -554,6 +554,60 @@ def undo_edit_version(version: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/edit/accept/{version}", tags=["Phase 5"])
+def accept_edit_version(version: int):
+    """Commit an edit version as accepted in history."""
+    try:
+        record = edit_state_manager.get_version(version)
+        _apply_snapshot_to_orchestrator(record.state_json)
+        committed_version = edit_state_manager.snapshot(
+            state_json=record.state_json,
+            description=f"Accepted edit from version {version}",
+            asset_paths=_collect_snapshot_assets(),
+        )
+        return {
+            "success": True,
+            "data": {
+                "accepted_version": version,
+                "committed_version": committed_version,
+            },
+            "message": f"Accepted edit version {version}",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/edit/reject/{version}", tags=["Phase 5"])
+def reject_edit_version(version: int):
+    """Reject an edit by reverting to a specified pre-edit version."""
+    try:
+        record = edit_state_manager.revert(version)
+        _apply_snapshot_to_orchestrator(record.state_json)
+        return {
+            "success": True,
+            "data": {
+                "reverted_to_version": version,
+            },
+            "message": f"Rejected edit and reverted to version {version}",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/edit/clip/{clip_name}", tags=["Phase 5"])
+def get_edit_clip(clip_name: str):
+    """Serve a saved edit clip (before/after scene preview)."""
+    clip_file = Path(clip_name).name
+    clip_path = Path("outputs_phase5/edits") / clip_file
+    if not clip_path.is_file():
+        raise HTTPException(status_code=404, detail="Edit clip not found")
+    return FileResponse(clip_path, media_type="video/mp4", filename=clip_file)
+
+
 # ── Pipeline Endpoints ──────────────────────────────────────────────────────
 
 @app.get("/api/pipeline/status", tags=["Pipeline"])
