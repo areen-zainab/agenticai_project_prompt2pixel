@@ -19,3 +19,37 @@ def test_intent_classification_accuracy():
     for query, expected_target in queries_and_expected:
         intent = classify_intent(query)
         assert intent.target == expected_target
+
+
+def test_intent_fallback_parses_video_parameters(monkeypatch):
+    from phase5_edit_agent.agents import intent_classifier as mod
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("LLM unavailable")
+
+    monkeypatch.setattr(mod, "chat_json", _raise)
+    intent = classify_intent("Remove subtitles and use wipe left transition")
+    assert intent.target == "video"
+    assert intent.parameters.get("add_subtitles") is False
+    assert intent.parameters.get("transition_style") == "wipe_left"
+
+
+def test_intent_uses_llm_schema_when_available(monkeypatch):
+    from phase5_edit_agent.agents import intent_classifier as mod
+
+    def _fake_chat_json(*args, **kwargs):
+        return {
+            "intent": "change_voice_tone",
+            "target": "audio",
+            "scope": "scene:2",
+            "parameters": {"tone": "whispered"},
+            "confidence": 0.97,
+        }
+
+    monkeypatch.setattr(mod, "chat_json", _fake_chat_json)
+    intent = classify_intent("Make scene 2 voice whispered")
+    assert intent.intent == "change_voice_tone"
+    assert intent.target == "audio"
+    assert intent.scope == "scene:2"
+    assert intent.parameters["tone"] == "whispered"
+    assert intent.confidence > 0.9

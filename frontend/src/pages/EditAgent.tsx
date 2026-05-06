@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 interface EditIntent {
@@ -19,6 +19,7 @@ interface SceneOption {
   scene_id: number;
   location?: string;
   characters?: string[];
+  hasVideo?: boolean;
 }
 
 interface EditRunResult {
@@ -27,6 +28,9 @@ interface EditRunResult {
   response?: string;
   history?: VersionRecord[];
   preview_video_url?: string;
+  original_video_url?: string;
+  edited_clip_url?: string;
+  edit_saved?: boolean;
   before_version?: number;
   after_version?: number;
   selected_scene_id?: number | null;
@@ -51,6 +55,9 @@ const EditAgent = () => {
   const [beforeVersion, setBeforeVersion] = useState<number | null>(null);
   const [afterVersion, setAfterVersion] = useState<number | null>(null);
   const [reviewMode, setReviewMode] = useState(false);
+  const [originalVideoUrl, setOriginalVideoUrl] = useState<string | null>(null);
+  const [editedVideoUrl, setEditedVideoUrl] = useState<string | null>(null);
+  const [acceptedVideoUrl, setAcceptedVideoUrl] = useState<string | null>(null);
 
   const loadHistory = async () => {
     try {
@@ -66,16 +73,26 @@ const EditAgent = () => {
 
   const loadScenes = async () => {
     try {
-      const res = await fetch(`${API}/phase1/script`);
-      if (!res.ok) {
+      const [scriptRes, phase2Res] = await Promise.all([
+        fetch(`${API}/phase1/script`),
+        fetch(`${API}/phase2/outputs`),
+      ]);
+      if (!scriptRes.ok) {
         return;
       }
-      const data = await res.json();
-      const loadedScenes = Array.isArray(data.data?.scenes) ? data.data.scenes : [];
+      const scriptData = await scriptRes.json();
+      const loadedScenes = Array.isArray(scriptData.data?.scenes) ? scriptData.data.scenes : [];
+      const phase2Data = phase2Res.ok ? await phase2Res.json() : { data: { scenes: [] } };
+      const rendered = new Set<number>(
+        (Array.isArray(phase2Data.data?.scenes) ? phase2Data.data.scenes : [])
+          .filter((scene: any) => !scene.error)
+          .map((scene: any) => Number(scene.scene_id))
+      );
       const options = loadedScenes.map((scene: any) => ({
         scene_id: scene.scene_id,
         location: scene.location,
         characters: scene.characters,
+        hasVideo: rendered.has(Number(scene.scene_id)),
       }));
       setScenes(options);
       if (options.length > 0 && selectedSceneId === null) {
@@ -134,6 +151,8 @@ const EditAgent = () => {
       setResult(runResult);
       setIntent(runResult.classified_intent || null);
       setPreviewUrl(runResult.preview_video_url ? `${API.replace('/api', '')}${runResult.preview_video_url}` : null);
+      setOriginalVideoUrl(runResult.original_video_url ? `${API.replace('/api', '')}${runResult.original_video_url}` : null);
+      setEditedVideoUrl(runResult.edited_clip_url ? `${API.replace('/api', '')}${runResult.edited_clip_url}` : null);
       setBeforeVersion(runResult.before_version ?? null);
       setAfterVersion(runResult.after_version ?? null);
       setReviewMode(true);
@@ -151,9 +170,22 @@ const EditAgent = () => {
       setNotice('Nothing to accept yet.');
       return;
     }
-    setReviewMode(false);
-    setNotice(`Changes accepted at version ${afterVersion}.`);
-    await loadHistory();
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/edit/accept/${afterVersion}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Accept failed');
+      }
+      setReviewMode(false);
+      setAcceptedVideoUrl(editedVideoUrl || previewUrl);
+      setNotice(data.message || `Changes accepted at version ${afterVersion}.`);
+      await loadHistory();
+    } catch (err: any) {
+      setError(err.message || 'Accept failed.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleUndo = async (version: number) => {
@@ -162,6 +194,8 @@ const EditAgent = () => {
     setNotice(null);
     setReviewMode(false);
     setPreviewUrl(null);
+    setOriginalVideoUrl(null);
+    setEditedVideoUrl(null);
     try {
       const res = await fetch(`${API}/edit/undo/${version}`, { method: 'POST' });
       const data = await res.json();
@@ -184,6 +218,10 @@ const EditAgent = () => {
     { icon: '🗂️', label: 'Snapshot' },
     { icon: '💬', label: 'Respond' },
   ];
+  const selectedScene = useMemo(
+    () => scenes.find((scene) => scene.scene_id === selectedSceneId) || null,
+    [scenes, selectedSceneId]
+  );
 
   return (
     <>
@@ -217,7 +255,7 @@ const EditAgent = () => {
         .e-hero-title { font-family: 'Playfair Display', serif; font-size: 46px; font-weight: 700; color: #f0e8d8; line-height: 1.1; margin-bottom: 12px; }
         .e-hero-sub { font-size: 15px; color: #6a6268; font-weight: 300; max-width: 720px; line-height: 1.6; }
 
-        .e-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.9fr); gap: 24px; align-items: start; }
+        .e-grid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(320px, 1fr); gap: 24px; align-items: start; }
         .e-panel { background: #111113; border: 1px solid #1e1e22; border-radius: 12px; overflow: hidden; }
         .e-panel-hd { padding: 20px 22px; border-bottom: 1px solid #1e1e22; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
         .e-panel-title { font-family: 'Playfair Display', serif; font-size: 19px; color: #f0e8d8; }
@@ -231,6 +269,13 @@ const EditAgent = () => {
         .e-run-btn:hover:not(:disabled) { transform: translateY(-1px); }
         .e-run-btn:disabled { opacity: 0.65; cursor: not-allowed; }
         .e-spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+        .e-scene-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+        .e-scene-card { border: 1px solid #1e1e22; background: #0d0d0f; border-radius: 8px; padding: 10px 12px; cursor: pointer; text-align: left; color: #c6bcad; }
+        .e-scene-card.active { border-color: rgba(156,142,181,0.6); background: rgba(156,142,181,0.1); }
+        .e-scene-meta { font-size: 11px; color: #7b7280; margin-top: 4px; }
+        .e-video-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+        .e-video-cell { display: grid; gap: 8px; }
+        .e-video-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em; color: #5f5567; font-family: 'DM Mono', monospace; }
 
         .e-status { display: grid; gap: 16px; }
         .e-message { padding: 16px 18px; background: rgba(156,142,181,0.08); border: 1px solid rgba(156,142,181,0.15); border-radius: 10px; color: #cfc4de; font-size: 14px; line-height: 1.6; }
@@ -320,33 +365,40 @@ const EditAgent = () => {
                 <div className="e-panel-hd">
                   <div>
                     <div className="e-panel-title">Edit Request</div>
-                    <div className="e-panel-sub">Free-text command → classified intent</div>
+                    <div className="e-panel-sub">Select scene → describe edit → review before/after</div>
                   </div>
                   <div className="e-panel-sub">/api/edit/run</div>
                 </div>
                 <div className="e-panel-body">
-                          <div className="e-field" style={{ marginBottom: '14px' }}>
-                            <div className="e-field-lbl">Scene</div>
-                            <select
-                              className="e-textarea"
-                              style={{ minHeight: 'unset', padding: '12px 14px' }}
-                              value={selectedSceneId ?? ''}
-                              onChange={(event) => setSelectedSceneId(event.target.value ? Number(event.target.value) : null)}
-                            >
-                              <option value="">All scenes</option>
-                              {scenes.map((scene) => (
-                                <option key={scene.scene_id} value={scene.scene_id}>
-                                  Scene {scene.scene_id}{scene.location ? ` — ${scene.location}` : ''}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
+                  <div className="e-field" style={{ marginBottom: '10px' }}>
+                    <div className="e-field-lbl">Scene Selection</div>
+                  </div>
+                  <div className="e-scene-grid">
+                    {scenes.map((scene) => (
+                      <button
+                        type="button"
+                        className={`e-scene-card ${selectedSceneId === scene.scene_id ? 'active' : ''}`}
+                        key={scene.scene_id}
+                        onClick={() => setSelectedSceneId(scene.scene_id)}
+                      >
+                        <div>Scene {scene.scene_id}</div>
+                        <div className="e-scene-meta">
+                          {scene.location || 'Unknown location'} · {scene.hasVideo ? 'video ready' : 'no video'}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
                   <textarea
                     className="e-textarea"
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Example: Make the narrator sound sad in scene 2 and add fade transitions between scenes."
+                    placeholder="Example: Make this scene darker and lower narrator tone."
                   />
+                  {selectedScene && (
+                    <div className="e-panel-sub" style={{ marginTop: '10px' }}>
+                      Editing Scene {selectedScene.scene_id} · {selectedScene.location || 'Unknown'}
+                    </div>
+                  )}
                   <button className="e-run-btn" onClick={handleRunEdit} disabled={loading}>
                     {loading ? (
                       <>
@@ -433,15 +485,33 @@ const EditAgent = () => {
                 </div>
 
                 <div className="e-card">
-                  <div className="e-card-hd">Execution Preview</div>
+                  <div className="e-card-hd">Edited Segment Review</div>
                   <div className="e-card-body">
-                    {previewUrl ? (
-                      <video
-                        controls
-                        preload="metadata"
-                        src={previewUrl}
-                        style={{ width: '100%', borderRadius: '8px', border: '1px solid #1e1e22' }}
-                      />
+                    {(originalVideoUrl || editedVideoUrl || previewUrl) ? (
+                      <div className="e-video-grid">
+                        <div className="e-video-cell">
+                          <div className="e-video-label">Before Edit</div>
+                          {originalVideoUrl ? (
+                            <video
+                              controls
+                              preload="metadata"
+                              src={originalVideoUrl}
+                              style={{ width: '100%', borderRadius: '8px', border: '1px solid #1e1e22' }}
+                            />
+                          ) : (
+                            <div className="e-field-val">No saved before clip.</div>
+                          )}
+                        </div>
+                        <div className="e-video-cell">
+                          <div className="e-video-label">Edited Clip</div>
+                          <video
+                            controls
+                            preload="metadata"
+                            src={editedVideoUrl || previewUrl || ''}
+                            style={{ width: '100%', borderRadius: '8px', border: '1px solid #1e1e22' }}
+                          />
+                        </div>
+                      </div>
                     ) : result?.response ? (
                       <div className="e-field-val">{result.response}</div>
                     ) : (
@@ -460,13 +530,52 @@ const EditAgent = () => {
                         <button
                           className="e-revert-btn"
                           style={{ flex: 1 }}
-                          onClick={() => beforeVersion !== null && handleUndo(beforeVersion)}
+                          onClick={async () => {
+                            if (beforeVersion === null) {
+                              return;
+                            }
+                            setUndoingVersion(beforeVersion);
+                            try {
+                              const res = await fetch(`${API}/edit/reject/${beforeVersion}`, { method: 'POST' });
+                              const data = await res.json();
+                              if (!res.ok) {
+                                throw new Error(data.detail || 'Reject failed');
+                              }
+                              setReviewMode(false);
+                              setNotice(data.message || `Rejected edit and reverted to version ${beforeVersion}`);
+                              await loadHistory();
+                            } catch (err: any) {
+                              setError(err.message || 'Reject failed.');
+                            } finally {
+                              setUndoingVersion(null);
+                            }
+                          }}
                           disabled={beforeVersion === null}
                         >
                           Reject Changes
                         </button>
                       </div>
                     )}
+                  </div>
+                </div>
+                <div className="e-card">
+                  <div className="e-card-hd">Final Output</div>
+                  <div className="e-card-body">
+                    {acceptedVideoUrl ? (
+                      <video
+                        controls
+                        preload="metadata"
+                        src={acceptedVideoUrl}
+                        style={{ width: '100%', borderRadius: '8px', border: '1px solid #1e1e22' }}
+                      />
+                    ) : (
+                      <div className="e-field-val" style={{ color: '#6a6268' }}>
+                        Accept an edited segment to update final output preview.
+                      </div>
+                    )}
+                    <a className="e-revert-btn" href={`${API}/phase3/video`} target="_blank" rel="noreferrer">
+                      Open Full Final Video
+                    </a>
                   </div>
                 </div>
               </aside>

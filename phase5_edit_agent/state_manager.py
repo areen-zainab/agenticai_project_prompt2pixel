@@ -107,3 +107,19 @@ class StateManager:
                 shutil.copy2(snap_file, path)
 
         return record
+
+    def get_version(self, version: int) -> VersionRecord:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT version, timestamp, description, state_json, asset_paths FROM versions WHERE version=?",
+                (version,),
+            ).fetchone()
+        if not row:
+            raise ValueError(f"Version {version} not found")
+        return VersionRecord(
+            version=int(row[0]),
+            timestamp=str(row[1]),
+            description=str(row[2]),
+            state_json=json.loads(row[3]),
+            asset_paths=json.loads(row[4]),
+        )
